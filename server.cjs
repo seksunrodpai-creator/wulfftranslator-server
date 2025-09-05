@@ -1,12 +1,11 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch'); // npm i node-fetch@2
+const fetch = require('node-fetch'); // สำคัญ: ใช้ v2
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ไม่ต้องใช้ ENV ก็ได้คืนนี้ — ใส่ปลายทางฟรีหลายตัวไว้เลย
 const LT_ENDPOINTS = [
   'https://translate.astian.org',
   'https://translate.argosopentech.com',
@@ -43,7 +42,6 @@ app.post('/translate', async (req, res) => {
     if (!text || !source || !target) {
       return res.status(400).json({ error: 'Missing text/source/target' });
     }
-    // รองรับทั้งฟอร์แมต text/q
     const payload = { q: text, text, source, target, format: 'text' };
     const data = await translateViaAnyEndpoint(payload);
     const translated = data?.translatedText || data?.translated || data?.result || data;
