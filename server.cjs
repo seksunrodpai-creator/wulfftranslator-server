@@ -1,3 +1,4 @@
+// server.cjs
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
@@ -6,63 +7,72 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const {
-  PORT = 3000,
-  JWT_SECRET = 'changeme',
-  DEMO_USER = 'apiuser',
-  DEMO_PASS = 'apipass',
-  LT_URL = 'https://libretranslate.de' // เปลี่ยนเป็น upstream ของคุณได้
-} = process.env;
+const PORT = process.env.PORT || 10000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const DEMO_USER = process.env.DEMO_USER || 'apiuser';
+const DEMO_PASS = process.env.DEMO_PASS || 'apipass';
+const LT_URL = process.env.LT_URL || 'https://libretranslate.com/translate';
 
-// --- auth ---
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
 app.post('/auth/token', (req, res) => {
   const { user, pass } = req.body || {};
-  if (user === DEMO_USER && pass === DEMO_PASS) {
-    const token = jwt.sign({ user }, JWT_SECRET, { expiresIn: '12h' });
-    return res.json({ token });
+  if (user !== DEMO_USER || pass !== DEMO_PASS) {
+    return res.status(401).json({ error: 'invalid credentials' });
   }
-  return res.status(401).json({ error: 'invalid credentials' });
+  const token = jwt.sign({ u: user }, JWT_SECRET, { expiresIn: '12h' });
+  res.json({ token });
 });
 
-function auth(req, res, next) {
-  const h = req.headers.authorization || '';
-  const token = h.replace(/^Bearer\s+/i, '');
+// middleware ตรวจ token
+function requireAuth(req, res, next) {
   try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return res.status(401).json({ error: 'missing token' });
     jwt.verify(token, JWT_SECRET);
     next();
-  } catch {
-    res.status(401).json({ error: 'unauthorized' });
+  } catch (e) {
+    return res.status(401).json({ error: 'invalid token' });
   }
 }
 
-// --- translate proxy ---
-app.post('/translate', auth, async (req, res) => {
+app.post('/translate', requireAuth, async (req, res) => {
   try {
     const { text, source, target } = req.body || {};
     if (!text || !source || !target) {
-      return res.status(400).json({ error: 'missing text/source/target' });
+      return res.status(400).json({ error: 'missing fields' });
     }
 
-    const r = await fetch(`${LT_URL}/translate`, {
+    // LibreTranslate ต้องใช้ q/source/target
+    const payload = {
+      q: text,
+      source,
+      target,
+      format: 'text'
+    };
+
+    const r = await fetch(LT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        q: text,
-        source,
-        target,
-        format: 'text'
-      })
+      body: JSON.stringify(payload),
     });
-    const d = await r.json();
-    // รองรับชื่อ field หลายแบบ
-    const out = d.translatedText || d.translated || d.result || d.text || '';
-    res.json({ translatedText: out, raw: d });
-  } catch (e) {
-    res.status(500).json({ error: e.message || 'translate failed' });
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      console.error('LT error', r.status, body);
+      return res.status(502).json({ error: 'translator upstream error', status: r.status, body });
+    }
+
+    const data = await r.json();
+    // บาง instance คืน { translatedText } บางที่คืน { translated }
+    const out = data.translatedText || data.translated || '';
+    return res.json({ translatedText: out });
+  } catch (err) {
+    console.error('SERVER ERROR:', err);
+    return res.status(500).json({ error: 'internal', message: String(err && err.message || err) });
   }
 });
-
-app.get('/', (_req, res) => res.send('OK'));
 
 app.listen(PORT, () => {
   console.log(`Backend on http://localhost:${PORT}`);
